@@ -14,265 +14,353 @@ public class AadhaarExtractor {
 
         Map<String, String> fields = new HashMap<>();
 
-        if (text == null || text.trim().isEmpty()) {
-            fields.put("error", "No text extracted from document");
+        if (text == null || text.isBlank()) {
             return fields;
         }
 
-        // Normalize OCR text
-        String normalizedText = text
-                .replace("\r", "\n")
-                .replaceAll("[ \\t]+", " ")
-                .trim();
+        text = text.replace("\r", "");
 
-        /*
-         * =========================================================
-         * 1. EXTRACT AADHAAR NUMBER
-         * =========================================================
-         */
+        // =========================================================
+        // 1. AADHAAR NUMBER
+        // =========================================================
 
         Pattern aadhaarPattern = Pattern.compile(
                 "(?<!\\d)(\\d{4}\\s*\\d{4}\\s*\\d{4})(?!\\d)"
         );
 
-        Matcher aadhaarMatcher = aadhaarPattern.matcher(normalizedText);
+        Matcher aadhaarMatcher = aadhaarPattern.matcher(text);
 
         if (aadhaarMatcher.find()) {
-
-            String aadhaarNumber = aadhaarMatcher.group(1)
+            String aadhaar = aadhaarMatcher.group(1)
                     .replaceAll("\\s+", " ")
                     .trim();
 
-            fields.put("aadhaarNumber", aadhaarNumber);
-
-        } else {
-
-            fields.put("aadhaarError",
-                    "Aadhaar number not found");
+            fields.put("aadhaarNumber", aadhaar);
         }
 
-        /*
-         * =========================================================
-         * 2. EXTRACT DATE OF BIRTH
-         * =========================================================
-         */
+
+        // =========================================================
+        // 2. DATE OF BIRTH
+        // =========================================================
 
         Pattern dobPattern = Pattern.compile(
-                "(?i)(?:DOB|D\\.O\\.B|Date of Birth|जन्म|పుట్టిన)\\s*[:\\-/]?\\s*" +
-                "(\\d{1,2}[/-]\\d{1,2}[/-]\\d{4})"
+                "(?i)(?:DOB|D0B|Date\\s*of\\s*Birth)"
+                        + "\\s*[:\\-]?\\s*"
+                        + "(\\d{2}[\\/\\-.]\\d{2}[\\/\\-.]\\d{4})"
         );
 
-        Matcher dobMatcher = dobPattern.matcher(normalizedText);
+        Matcher dobMatcher = dobPattern.matcher(text);
 
         if (dobMatcher.find()) {
 
-            fields.put("dob", dobMatcher.group(1));
+            String dob = dobMatcher.group(1)
+                    .replace("-", "/")
+                    .replace(".", "/")
+                    .trim();
 
-        } else {
-
-            // Fallback: find any date in the document
-            Pattern generalDatePattern = Pattern.compile(
-                    "\\b(\\d{1,2}[/-]\\d{1,2}[/-]\\d{4})\\b"
-            );
-
-            Matcher generalDateMatcher =
-                    generalDatePattern.matcher(normalizedText);
-
-            if (generalDateMatcher.find()) {
-                fields.put("dob", generalDateMatcher.group(1));
-            } else {
-                fields.put("dobError", "Date of birth not found");
-            }
+            fields.put("dob", dob);
         }
 
-        /*
-         * =========================================================
-         * 3. EXTRACT GENDER
-         * =========================================================
-         *
-         * Searches the complete OCR text.
-         * Works even when Telugu/Hindi labels are present.
-         *
-         * IMPORTANT:
-         * FEMALE is checked before MALE because FEMALE contains MALE.
-         * =========================================================
-         */
 
-        String gender = extractGender(normalizedText);
+        // =========================================================
+        // 3. GENDER
+        // =========================================================
+
+        String gender = extractGender(text);
 
         if (gender != null) {
             fields.put("gender", gender);
         } else {
-            fields.put("genderError",
-                    "Gender must be Male, Female or Other");
+            fields.put(
+                    "genderError",
+                    "Gender must be Male, Female or Other"
+            );
         }
 
-        /*
-         * =========================================================
-         * 4. EXTRACT NAME
-         * =========================================================
-         */
 
-        String name = extractName(normalizedText);
+        // =========================================================
+        // 4. NAME
+        // =========================================================
 
-        if (name != null && !name.isEmpty()) {
+        String name = extractName(text);
+
+        if (name != null) {
             fields.put("name", name);
-        } else {
-            fields.put("nameError", "Name not found");
         }
+
 
         return fields;
     }
 
-    /*
-     * =============================================================
-     * GENDER EXTRACTION
-     * =============================================================
-     */
+
+    // =============================================================
+    // GENDER EXTRACTION
+    // =============================================================
 
     private String extractGender(String text) {
 
-        /*
-         * English gender words.
-         *
-         * FEMALE must come before MALE.
-         */
-        Pattern englishGenderPattern = Pattern.compile(
-                "(?i)\\b(FEMALE|MALE|OTHER)\\b"
-        );
+        // ---------------------------------------------------------
+        // English
+        // ---------------------------------------------------------
 
-        Matcher englishMatcher =
-                englishGenderPattern.matcher(text);
-
-        if (englishMatcher.find()) {
-
-            String value = englishMatcher.group(1).toUpperCase();
-
-            if (value.equals("MALE")) {
-                return "Male";
-            }
-
-            if (value.equals("FEMALE")) {
-                return "Female";
-            }
-
-            if (value.equals("OTHER")) {
-                return "Other";
-            }
-        }
-
-        /*
-         * English single-letter gender values.
-         * Example: Gender: M or Gender: F
-         */
-        Pattern shortGenderPattern = Pattern.compile(
-                "(?i)(?:GENDER|SEX|लिंग|లింగము|లింగం)" +
-                "\\s*[:\\-/]?\\s*([MF])\\b"
-        );
-
-        Matcher shortMatcher =
-                shortGenderPattern.matcher(text);
-
-        if (shortMatcher.find()) {
-
-            String value = shortMatcher.group(1).toUpperCase();
-
-            if (value.equals("M")) {
-                return "Male";
-            }
-
-            if (value.equals("F")) {
-                return "Female";
-            }
-        }
-
-        /*
-         * Telugu gender words.
-         */
-        if (text.contains("పురుషుడు")
-                || text.contains("పురుష")
-                || text.contains("మగ")) {
-
+        if (Pattern.compile("(?i)\\bMALE\\b").matcher(text).find()) {
             return "Male";
         }
 
+        if (Pattern.compile("(?i)\\bFEMALE\\b").matcher(text).find()) {
+            return "Female";
+        }
+
+
+        // ---------------------------------------------------------
+        // Telugu
+        // ---------------------------------------------------------
+
+        // పురుషుడు = Male
+        // OCR variation seen in your document: వురుషుడు
+        if (text.contains("పురుషుడు")
+                || text.contains("వురుషుడు")
+                || text.contains("పురుష")) {
+            return "Male";
+        }
+
+        // స్త్రీ / మహిళ = Female
         if (text.contains("స్త్రీ")
                 || text.contains("మహిళ")) {
-
             return "Female";
         }
 
-        /*
-         * Hindi gender words.
-         */
-        if (text.contains("पुरुष")
-                || text.contains("लड़का")) {
 
+        // ---------------------------------------------------------
+        // Hindi
+        // ---------------------------------------------------------
+
+        // पुरुष = Male
+        if (text.contains("पुरुष")) {
             return "Male";
         }
 
+        // महिला / स्त्री = Female
         if (text.contains("महिला")
-                || text.contains("स्त्री")
-                || text.contains("लड़की")) {
-
+                || text.contains("स्त्री")) {
             return "Female";
         }
+
 
         return null;
     }
 
-    /*
-     * =============================================================
-     * NAME EXTRACTION
-     * =============================================================
-     */
+
+    // =============================================================
+    // NAME EXTRACTION
+    // =============================================================
 
     private String extractName(String text) {
 
         /*
-         * First try the existing English "Name:" format.
+         * IMPORTANT:
+         *
+         * Your Telugu Aadhaar OCR contains garbage:
+         *
+         * ROO BmEe
+         * ...
+         * స్రవీణ్‌ కుమార్‌
+         * Praveen Kumar Duddilla
+         * @&VDOB: 04/01/1981
+         *
+         * Therefore we should NOT simply take the first
+         * English-looking line.
+         *
+         * We search for the English name immediately before
+         * the DOB information.
          */
-        Pattern namePattern = Pattern.compile(
-                "(?im)^\\s*Name\\s*:\\s*(.+?)\\s*$"
+
+
+        // ---------------------------------------------------------
+        // Strategy 1:
+        // English name directly before DOB
+        // ---------------------------------------------------------
+
+        Pattern nameBeforeDob = Pattern.compile(
+                "(?mi)^\\s*"
+                        + "([A-Za-z][A-Za-z .'-]{2,})"
+                        + "\\s*\\n\\s*"
+                        + "[^\\n]*"
+                        + "(?:DOB|D0B|Date\\s*of\\s*Birth)"
+                        + "\\s*[:\\-]?\\s*"
+                        + "\\d{2}[\\/\\-.]\\d{2}[\\/\\-.]\\d{4}"
         );
 
-        Matcher nameMatcher = namePattern.matcher(text);
+        Matcher matcher = nameBeforeDob.matcher(text);
 
-        if (nameMatcher.find()) {
+        if (matcher.find()) {
 
-            String name = nameMatcher.group(1).trim();
+            String name = cleanName(matcher.group(1));
 
-            if (!name.isEmpty()) {
+            if (isValidName(name)) {
                 return name;
             }
+        }
+
+
+        // ---------------------------------------------------------
+        // Strategy 2:
+        // Search backwards from DOB for the nearest valid
+        // English name line.
+        // ---------------------------------------------------------
+
+        Pattern dobPositionPattern = Pattern.compile(
+                "(?i)(?:DOB|D0B|Date\\s*of\\s*Birth)"
+        );
+
+        Matcher dobPositionMatcher =
+                dobPositionPattern.matcher(text);
+
+        if (dobPositionMatcher.find()) {
+
+            String beforeDob =
+                    text.substring(0, dobPositionMatcher.start());
+
+            String[] lines = beforeDob.split("\\n");
+
+            /*
+             * Search the previous several lines.
+             * This avoids selecting "ROO BmEe" at the top.
+             */
+
+            for (int i = lines.length - 1;
+                 i >= Math.max(0, lines.length - 8);
+                 i--) {
+
+                String candidate =
+                        cleanName(lines[i]);
+
+                if (isValidName(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+
+
+        // ---------------------------------------------------------
+        // Strategy 3:
+        // Look for a normal multi-word English name anywhere
+        // in the OCR.
+        // ---------------------------------------------------------
+
+        Pattern generalNamePattern = Pattern.compile(
+                "(?m)^\\s*"
+                        + "([A-Z][A-Za-z]+"
+                        + "(?:\\s+[A-Z][A-Za-z]+)+)"
+                        + "\\s*$"
+        );
+
+        Matcher generalMatcher =
+                generalNamePattern.matcher(text);
+
+        while (generalMatcher.find()) {
+
+            String candidate =
+                    cleanName(generalMatcher.group(1));
+
+            if (isValidName(candidate)) {
+                return candidate;
+            }
+        }
+
+
+        return null;
+    }
+
+
+    // =============================================================
+    // NAME CLEANING
+    // =============================================================
+
+    private String cleanName(String name) {
+
+        if (name == null) {
+            return null;
+        }
+
+        name = name.trim();
+
+        // Remove OCR punctuation at beginning/end
+        name = name.replaceAll("^[^A-Za-z]+", "");
+        name = name.replaceAll("[^A-Za-z.' -]+$", "");
+
+        // Normalize spaces
+        name = name.replaceAll("\\s+", " ").trim();
+
+        return name;
+    }
+
+
+    // =============================================================
+    // NAME VALIDATION
+    // =============================================================
+
+    private boolean isValidName(String name) {
+
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+
+        // Too short
+        if (name.length() < 4) {
+            return false;
+        }
+
+        // Must contain at least two alphabetic words
+        String[] words = name.split("\\s+");
+
+        if (words.length < 2) {
+            return false;
+        }
+
+        // Every character should belong to a normal English name
+        if (!name.matches("[A-Za-z][A-Za-z.' -]*")) {
+            return false;
         }
 
         /*
-         * Fallback for OCR text where the name appears before DOB.
+         * Reject obvious OCR garbage.
          *
-         * Example:
-         * Praveen Kumar Duddilla
-         * DOB: 04/01/1981
+         * This is specifically useful for your:
+         * ROO BmEe
+         *
+         * but we don't rely only on this list.
          */
-        Pattern beforeDobPattern = Pattern.compile(
-                "(?is)(?:^|\\n)\\s*([A-Za-z][A-Za-z .]{2,60})" +
-                "\\s*\\n\\s*(?:.*DOB|.*D\\.O\\.B)"
-        );
 
-        Matcher beforeDobMatcher =
-                beforeDobPattern.matcher(text);
+        String lower = name.toLowerCase();
 
-        if (beforeDobMatcher.find()) {
-
-            String name = beforeDobMatcher.group(1).trim();
-
-            if (!name.isEmpty()
-                    && !name.equalsIgnoreCase("Government of India")) {
-
-                return name;
-            }
+        if (lower.equals("roo bmee")) {
+            return false;
         }
 
-        return null;
+        if (lower.equals("roo bmee")) {
+            return false;
+        }
+
+        // Name should contain mostly alphabetic characters
+        long letters = name.chars()
+                .filter(Character::isLetter)
+                .count();
+
+        long total = name.chars()
+                .filter(c -> Character.isLetter(c)
+                        || c == ' '
+                        || c == '.'
+                        || c == '-'
+                        || c == '\'')
+                .count();
+
+        if (total == 0) {
+            return false;
+        }
+
+        double ratio = (double) letters / total;
+
+        return ratio >= 0.70;
     }
 }
