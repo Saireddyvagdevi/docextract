@@ -1,0 +1,32 @@
+### Test Aadhaar PDF upload
+POST http://localhost:8080/api/documents/upload
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="aadhaar_test.pdf"
+Content-Type: application/pdf
+
+< C:\Users\vagde\OneDrive\Documents\Desktop\aadhaar_test.pdf
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### Get all documents
+GET http://localhost:8080/api/documents
+Accept: application/json
+### Get document by ID
+GET http://localhost:8080/api/documents/24
+Accept: application/json
+
+### Test Invalid Aadhaar
+POST http://localhost:8080/api/documents/upload
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="aadhaar-invalid.txt"
+Content-Type: text/plain
+
+< C:\Users\vagde\OneDrive\Documents\Desktop\aadhaar-invalid.txt
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### Delete document
+DELETE http://localhost:8080/api/documents/25
+Accept: application/json

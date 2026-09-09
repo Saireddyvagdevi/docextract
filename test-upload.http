@@ -1,0 +1,69 @@
+POST http://localhost:8080/api/documents/upload
+Content-Type: multipart/form-data; boundary=----DocExtractBoundary
+
+------DocExtractBoundary
+Content-Disposition: form-data; name="file"; filename="sample.txt"
+Content-Type: text/plain
+
+This is my first document for testing DocExtract.
+The application should extract this text and save it in PostgreSQL.
+
+------DocExtractBoundary--
+
+###
+
+GET http://localhost:8080/api/documents/2
+
+###
+
+###
+
+POST http://localhost:8080/api/documents/upload
+Content-Type: multipart/form-data; boundary=----DocExtractBoundary
+
+------DocExtractBoundary
+Content-Disposition: form-data; name="file"; filename="sample.pdf"
+Content-Type: application/pdf
+
+< C:\Users\vagde\OneDrive\Documents\Desktop\sample.pdf
+
+------DocExtractBoundary--
+
+###
+GET http://localhost:8080/api/documents/5
+
+###
+POST http://localhost:8080/api/documents/upload
+Content-Type: multipart/form-data; boundary=----DocExtractBoundary
+
+------DocExtractBoundary
+Content-Disposition: form-data; name="file"; filename="sample.pdf"
+Content-Type: application/pdf
+
+< C:\Users\vagde\OneDrive\Documents\Desktop\sample.pdf
+
+------DocExtractBoundary--
+
+###
+POST http://localhost:8080/api/documents/upload
+Content-Type: multipart/form-data; boundary=----DocExtractBoundary
+
+------DocExtractBoundary
+Content-Disposition: form-data; name="file"; filename="aadhaar-test.txt.txt"
+Content-Type: text/plain
+
+< C:\Users\vagde\OneDrive\Documents\Desktop\aadhaar-test.txt.txt
+
+------DocExtractBoundary--
+###
+
+POST http://localhost:8080/api/documents/upload
+Content-Type: multipart/form-data; boundary=----DocExtractBoundary
+
+------DocExtractBoundary
+Content-Disposition: form-data; name="file"; filename="aadhaar-invalid.txt"
+Content-Type: text/plain
+
+< C:\Users\vagde\OneDrive\Documents\Desktop\aadhaar-invalid.txt
+
+------DocExtractBoundary--
