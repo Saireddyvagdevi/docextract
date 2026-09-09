@@ -16,8 +16,9 @@ import net.sourceforge.tess4j.TesseractException;
 public class OcrService {
 
     private static final String TESSERACT_DATA_PATH =
-            "C:\\Program Files\\Tesseract-OCR\\tessdata";
-
+        System.getProperty("os.name").toLowerCase().contains("win")
+                ? "C:\\Program Files\\Tesseract-OCR\\tessdata"
+                : "/usr/share/tesseract-ocr/5/tessdata";
     private static final String OCR_LANGUAGES =
             "eng+hin+tel";
 
