@@ -1,5 +1,6 @@
 FROM eclipse-temurin:21-jdk-jammy
 
+# Install Tesseract OCR and all required languages
 RUN apt-get update && \
     apt-get install -y \
         tesseract-ocr \
@@ -8,14 +9,19 @@ RUN apt-get update && \
         tesseract-ocr-tel && \
     rm -rf /var/lib/apt/lists/*
 
-RUN echo "=== TESSERACT VERSION ===" && \
-    tesseract --version && \
-    echo "=== TESSERACT LANGUAGES ===" && \
-    tesseract --list-langs && \
-    echo "=== TESSDATA FILES ===" && \
-    ls -lh /usr/share/tesseract-ocr/5/tessdata/
+# Create our own fixed tessdata directory
+RUN mkdir -p /opt/tessdata && \
+    find /usr/share/tesseract-ocr -type f -name "eng.traineddata" -exec cp {} /opt/tessdata/ \; && \
+    find /usr/share/tesseract-ocr -type f -name "hin.traineddata" -exec cp {} /opt/tessdata/ \; && \
+    find /usr/share/tesseract-ocr -type f -name "tel.traineddata" -exec cp {} /opt/tessdata/ \; && \
+    echo "===== TESSDATA FILES =====" && \
+    ls -lh /opt/tessdata && \
+    test -f /opt/tessdata/eng.traineddata && \
+    test -f /opt/tessdata/hin.traineddata && \
+    test -f /opt/tessdata/tel.traineddata
 
-ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5
+# Tesseract expects TESSDATA_PREFIX to be the parent of tessdata
+ENV TESSDATA_PREFIX=/opt
 
 WORKDIR /app
 

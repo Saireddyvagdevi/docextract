@@ -1,9 +1,9 @@
 package docextract;
 
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
+import java.util.Locale;
 
 import javax.imageio.ImageIO;
 
@@ -15,22 +15,83 @@ import net.sourceforge.tess4j.TesseractException;
 @Service
 public class OcrService {
 
-    private static final String TESSERACT_DATA_PATH =
-            System.getProperty("os.name").toLowerCase().contains("win")
-                    ? "C:\\Program Files\\Tesseract-OCR\\tessdata"
-                    : "/usr/share/tesseract-ocr/5/tessdata";
+    /*
+     * Maximum image dimension used by OCR.
+     *
+     * This prevents very large uploaded images from consuming
+     * too much memory on Render's free instance.
+     */
+    private static final int MAX_DIMENSION = 4000;
 
     /*
-     * Keep all three languages.
+     * Windows:
+     *   C:\Program Files\Tesseract-OCR\tessdata
      *
-     * eng = English
-     * hin = Hindi
-     * tel = Telugu
+     * Render/Linux:
+     *   /opt/tessdata
+     *
+     * We use /opt/tessdata because the Dockerfile explicitly
+     * places eng, hin and tel traineddata files there.
      */
-    private static final String OCR_LANGUAGES =
-            "eng+hin+tel";
+    private String getTessDataPath() {
+
+        String os = System.getProperty("os.name")
+                .toLowerCase(Locale.ROOT);
+
+        if (os.contains("win")) {
+            return "C:\\Program Files\\Tesseract-OCR\\tessdata";
+        }
+
+        return "/opt/tessdata";
+    }
 
     public String extractText(File imageFile) {
+
+        Tesseract tesseract = new Tesseract();
+
+        /*
+         * Tell Tess4J exactly where the language files are.
+         */
+        tesseract.setDatapath(getTessDataPath());
+
+        /*
+         * Support:
+         * English + Hindi + Telugu
+         *
+         * This allows documents containing combinations such as:
+         * Telugu + English
+         * Hindi + English
+         * English only
+         */
+        tesseract.setLanguage("eng+hin+tel");
+
+        /*
+         * LSTM OCR engine.
+         */
+        tesseract.setOcrEngineMode(1);
+
+        /*
+         * Sparse text layout.
+         * Useful for Aadhaar/PAN documents where text may be
+         * separated into different areas.
+         */
+        tesseract.setPageSegMode(11);
+
+        /*
+         * Preserve spaces between words.
+         */
+        tesseract.setVariable(
+                "preserve_interword_spaces",
+                "1"
+        );
+
+        /*
+         * Tell Tesseract the approximate input resolution.
+         */
+        tesseract.setVariable(
+                "user_defined_dpi",
+                "200"
+        );
 
         File processedImage = null;
 
@@ -40,246 +101,159 @@ public class OcrService {
                     ImageIO.read(imageFile);
 
             if (original == null) {
-
-                throw new RuntimeException(
-                        "Unable to read image"
+                throw new IOException(
+                        "Unable to read image: " + imageFile.getName()
                 );
             }
 
             /*
-             * =====================================================
-             * MEMORY-SAFE IMAGE PROCESSING
-             * =====================================================
+             * Resize only when necessary.
              *
-             * The old version enlarged every image 3X.
-             *
-             * Example:
-             *
-             * 2500 x 3500
-             *
-             * became:
-             *
-             * 7500 x 10500
-             *
-             * This consumes a very large amount of RAM and caused:
-             *
-             * java.lang.OutOfMemoryError: Java heap space
-             *
-             * on Render.
-             *
-             * Instead:
-             *
-             * - Small images are enlarged only up to 1.5X.
-             * - Large images are kept at their original size.
-             * - Very large images are reduced to a safe maximum.
+             * We intentionally avoid 3x enlargement because it
+             * caused unnecessary memory usage on Render.
              */
-
-            BufferedImage imageForOCR =
-                    prepareImageForOCR(original);
+            BufferedImage image =
+                    resizeForOcr(original);
 
             /*
-             * We create a temporary PNG because Tess4J/Tesseract
-             * works reliably with the image file.
+             * If the image was resized, create a temporary PNG.
              */
+            if (image != original) {
 
-            processedImage =
-                    File.createTempFile(
-                            "ocr-image-",
-                            ".png"
-                    );
+                processedImage = File.createTempFile(
+                        "ocr-",
+                        ".png"
+                );
 
-            ImageIO.write(
-                    imageForOCR,
-                    "png",
-                    processedImage
-            );
+                ImageIO.write(
+                        image,
+                        "png",
+                        processedImage
+                );
+
+            } else {
+
+                processedImage = imageFile;
+            }
 
             /*
-             * Release image references as early as possible.
+             * Perform ONE OCR pass.
+             *
+             * This keeps processing time and memory usage lower.
              */
+            String text =
+                    tesseract.doOCR(processedImage);
 
-            imageForOCR.flush();
-            original.flush();
+            if (text == null) {
+                return "";
+            }
 
-            /*
-             * =====================================================
-             * SINGLE OCR PASS
-             * =====================================================
-             *
-             * PSM 11 works well for documents such as:
-             *
-             * Aadhaar
-             * PAN
-             * multilingual documents
-             *
-             * A single OCR pass is considerably lighter than
-             * running Tesseract twice.
-             */
+            return text.trim();
 
-            return performOCR(
-                    processedImage,
-                    11
-            );
-
-        } catch (Exception e) {
+        } catch (IOException | TesseractException e) {
 
             throw new RuntimeException(
-                    "Image processing failed: "
-                            + e.getMessage(),
+                    "OCR failed for file: "
+                            + imageFile.getName(),
                     e
             );
 
         } finally {
 
+            /*
+             * Delete only our temporary processed image.
+             * Never delete the original uploaded file.
+             */
             if (processedImage != null
+                    && processedImage != imageFile
                     && processedImage.exists()) {
 
-                processedImage.delete();
+                if (!processedImage.delete()) {
+                    processedImage.deleteOnExit();
+                }
             }
         }
     }
 
-    // =============================================================
-    // MEMORY-SAFE IMAGE PREPARATION
-    // =============================================================
-
-    private BufferedImage prepareImageForOCR(
+    /*
+     * Resize image to a safe size for OCR.
+     *
+     * Large images are reduced.
+     *
+     * Smaller images can be enlarged up to 1.5x,
+     * but never beyond MAX_DIMENSION.
+     */
+    private BufferedImage resizeForOcr(
             BufferedImage original) {
 
-        int originalWidth =
-                original.getWidth();
+        int width = original.getWidth();
+        int height = original.getHeight();
 
-        int originalHeight =
-                original.getHeight();
+        int max = Math.max(width, height);
 
-        /*
-         * Maximum dimension allowed for OCR.
-         *
-         * This prevents very large PDF pages from consuming
-         * excessive Java heap memory.
-         */
+        double scale;
 
-        final int MAX_DIMENSION = 4000;
+        if (max > MAX_DIMENSION) {
 
-        /*
-         * If the image is already large enough,
-         * do NOT enlarge it.
-         */
+            scale =
+                    (double) MAX_DIMENSION / max;
 
-        int largestDimension =
-                Math.max(
-                        originalWidth,
-                        originalHeight
-                );
+        } else if (max < 2500) {
 
-        if (largestDimension >= MAX_DIMENSION) {
-
-            double scale =
-                    (double) MAX_DIMENSION
-                            / largestDimension;
-
-            int newWidth =
-                    Math.max(
-                            1,
-                            (int) (
-                                    originalWidth
-                                            * scale
-                            )
-                    );
-
-            int newHeight =
-                    Math.max(
-                            1,
-                            (int) (
-                                    originalHeight
-                                            * scale
-                            )
-                    );
-
-            return resizeImage(
-                    original,
-                    newWidth,
-                    newHeight
+            scale = Math.min(
+                    1.5,
+                    (double) MAX_DIMENSION / max
             );
-        }
 
-        /*
-         * For smaller images, allow a maximum 1.5X enlargement.
-         *
-         * This helps OCR quality without the huge memory usage
-         * caused by 3X enlargement.
-         */
+        } else {
 
-        int newWidth =
-                Math.min(
-                        originalWidth * 3 / 2,
-                        MAX_DIMENSION
-                );
-
-        int newHeight =
-                Math.min(
-                        originalHeight * 3 / 2,
-                        MAX_DIMENSION
-                );
-
-        /*
-         * If enlargement is unnecessary,
-         * simply return the original image.
-         */
-
-        if (newWidth <= originalWidth
-                && newHeight <= originalHeight) {
-
+            /*
+             * Image is already large enough.
+             */
             return original;
         }
 
-        return resizeImage(
-                original,
-                newWidth,
-                newHeight
-        );
-    }
+        int newWidth =
+                Math.max(1, (int) Math.round(width * scale));
 
-    // =============================================================
-    // IMAGE RESIZE
-    // =============================================================
-
-    private BufferedImage resizeImage(
-            BufferedImage original,
-            int width,
-            int height) {
+        int newHeight =
+                Math.max(1, (int) Math.round(height * scale));
 
         BufferedImage resized =
                 new BufferedImage(
-                        width,
-                        height,
+                        newWidth,
+                        newHeight,
                         BufferedImage.TYPE_INT_RGB
                 );
 
-        Graphics2D graphics =
+        java.awt.Graphics2D graphics =
                 resized.createGraphics();
 
+        /*
+         * Bilinear interpolation gives a good balance
+         * between OCR quality and memory/CPU usage.
+         */
         graphics.setRenderingHint(
-                RenderingHints.KEY_INTERPOLATION,
-                RenderingHints.VALUE_INTERPOLATION_BILINEAR
+                java.awt.RenderingHints.KEY_INTERPOLATION,
+                java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR
         );
 
         graphics.setRenderingHint(
-                RenderingHints.KEY_RENDERING,
-                RenderingHints.VALUE_RENDER_SPEED
+                java.awt.RenderingHints.KEY_RENDERING,
+                java.awt.RenderingHints.VALUE_RENDER_SPEED
         );
 
         graphics.setRenderingHint(
-                RenderingHints.KEY_ANTIALIASING,
-                RenderingHints.VALUE_ANTIALIAS_OFF
+                java.awt.RenderingHints.KEY_ANTIALIASING,
+                java.awt.RenderingHints.VALUE_ANTIALIAS_OFF
         );
 
         graphics.drawImage(
                 original,
                 0,
                 0,
-                width,
-                height,
+                newWidth,
+                newHeight,
                 null
         );
 
@@ -287,82 +261,4 @@ public class OcrService {
 
         return resized;
     }
-
-    // =============================================================
-    // OCR
-    // =============================================================
-
-    private String performOCR(
-            File imageFile,
-            int pageSegmentationMode) {
-
-        Tesseract tesseract =
-                new Tesseract();
-
-        tesseract.setDatapath(
-                TESSERACT_DATA_PATH
-        );
-
-        /*
-         * IMPORTANT:
-         *
-         * Keep English + Hindi + Telugu.
-         *
-         * This allows documents such as:
-         *
-         * Telugu + English Aadhaar
-         * Hindi + English Aadhaar
-         * English PAN
-         * Other multilingual documents
-         */
-
-        tesseract.setLanguage(
-                OCR_LANGUAGES
-        );
-
-        tesseract.setPageSegMode(
-                pageSegmentationMode
-        );
-
-        /*
-         * LSTM OCR engine.
-         */
-
-        tesseract.setOcrEngineMode(1);
-
-        /*
-         * Preserve spacing between words.
-         */
-
-        tesseract.setVariable(
-                "preserve_interword_spaces",
-                "1"
-        );
-
-        /*
-         * Disable unnecessary OCR features that can consume
-         * additional processing resources.
-         */
-
-        tesseract.setVariable(
-                "user_defined_dpi",
-                "200"
-        );
-
-        try {
-
-            return tesseract.doOCR(
-                    imageFile
-            );
-
-        } catch (TesseractException e) {
-
-            throw new RuntimeException(
-                    "OCR failed: "
-                            + e.getMessage(),
-                    e
-            );
-        }
-    }
 }
-
