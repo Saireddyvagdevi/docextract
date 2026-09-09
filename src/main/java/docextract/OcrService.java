@@ -16,15 +16,23 @@ import net.sourceforge.tess4j.TesseractException;
 public class OcrService {
 
     private static final String TESSERACT_DATA_PATH =
-        System.getProperty("os.name").toLowerCase().contains("win")
-                ? "C:\\Program Files\\Tesseract-OCR\\tessdata"
-                : "/usr/share/tesseract-ocr/5/tessdata";
+            System.getProperty("os.name").toLowerCase().contains("win")
+                    ? "C:\\Program Files\\Tesseract-OCR\\tessdata"
+                    : "/usr/share/tesseract-ocr/5/tessdata";
+
+    /*
+     * Keep all three languages.
+     *
+     * eng = English
+     * hin = Hindi
+     * tel = Telugu
+     */
     private static final String OCR_LANGUAGES =
             "eng+hin+tel";
 
     public String extractText(File imageFile) {
 
-        File enlargedImage = null;
+        File processedImage = null;
 
         try {
 
@@ -32,105 +40,86 @@ public class OcrService {
                     ImageIO.read(imageFile);
 
             if (original == null) {
+
                 throw new RuntimeException(
                         "Unable to read image"
                 );
             }
 
-            // =====================================================
-            // KEEP ORIGINAL WORKING 3X OCR
-            // =====================================================
+            /*
+             * =====================================================
+             * MEMORY-SAFE IMAGE PROCESSING
+             * =====================================================
+             *
+             * The old version enlarged every image 3X.
+             *
+             * Example:
+             *
+             * 2500 x 3500
+             *
+             * became:
+             *
+             * 7500 x 10500
+             *
+             * This consumes a very large amount of RAM and caused:
+             *
+             * java.lang.OutOfMemoryError: Java heap space
+             *
+             * on Render.
+             *
+             * Instead:
+             *
+             * - Small images are enlarged only up to 1.5X.
+             * - Large images are kept at their original size.
+             * - Very large images are reduced to a safe maximum.
+             */
 
-            int width =
-                    original.getWidth() * 3;
+            BufferedImage imageForOCR =
+                    prepareImageForOCR(original);
 
-            int height =
-                    original.getHeight() * 3;
+            /*
+             * We create a temporary PNG because Tess4J/Tesseract
+             * works reliably with the image file.
+             */
 
-            BufferedImage enlarged =
-                    new BufferedImage(
-                            width,
-                            height,
-                            BufferedImage.TYPE_INT_RGB
-                    );
-
-            Graphics2D graphics =
-                    enlarged.createGraphics();
-
-            graphics.setRenderingHint(
-                    RenderingHints.KEY_INTERPOLATION,
-                    RenderingHints.VALUE_INTERPOLATION_BICUBIC
-            );
-
-            graphics.setRenderingHint(
-                    RenderingHints.KEY_RENDERING,
-                    RenderingHints.VALUE_RENDER_QUALITY
-            );
-
-            graphics.drawImage(
-                    original,
-                    0,
-                    0,
-                    width,
-                    height,
-                    null
-            );
-
-            graphics.dispose();
-
-            enlargedImage =
+            processedImage =
                     File.createTempFile(
                             "ocr-image-",
                             ".png"
                     );
 
             ImageIO.write(
-                    enlarged,
+                    imageForOCR,
                     "png",
-                    enlargedImage
+                    processedImage
             );
 
-            // =====================================================
-            // ORIGINAL OCR - DO NOT CHANGE
-            // =====================================================
-
-            String originalText =
-                    performOCR(
-                            enlargedImage,
-                            11
-                    );
-
             /*
-             * This is the OCR result that already works for:
-             *
-             * NITU BHURVE
-             * 17/06/1996
-             * FEGPD5131E
-             *
-             * We keep it exactly as it is.
+             * Release image references as early as possible.
              */
 
-            // =====================================================
-            // TARGETED SECOND OCR FOR FATHER NAME
-            // =====================================================
+            imageForOCR.flush();
+            original.flush();
 
-            if (looksLikePan(originalText)) {
+            /*
+             * =====================================================
+             * SINGLE OCR PASS
+             * =====================================================
+             *
+             * PSM 11 works well for documents such as:
+             *
+             * Aadhaar
+             * PAN
+             * multilingual documents
+             *
+             * A single OCR pass is considerably lighter than
+             * running Tesseract twice.
+             */
 
-                String fatherText =
-                        extractFatherNameUsingOCR(
-                                enlargedImage
-                        );
-
-                if (fatherText != null
-                        && !fatherText.isBlank()) {
-
-                    return originalText.trim()
-                            + "\n"
-                            + fatherText.trim();
-                }
-            }
-
-            return originalText;
+            return performOCR(
+                    processedImage,
+                    11
+            );
 
         } catch (Exception e) {
 
@@ -142,356 +131,161 @@ public class OcrService {
 
         } finally {
 
-            if (enlargedImage != null
-                    && enlargedImage.exists()) {
+            if (processedImage != null
+                    && processedImage.exists()) {
 
-                enlargedImage.delete();
+                processedImage.delete();
             }
         }
     }
 
     // =============================================================
-    // TARGETED FATHER NAME OCR
+    // MEMORY-SAFE IMAGE PREPARATION
     // =============================================================
 
-    private String extractFatherNameUsingOCR(
-            File imageFile) {
+    private BufferedImage prepareImageForOCR(
+            BufferedImage original) {
 
-        String text;
+        int originalWidth =
+                original.getWidth();
 
-        try {
+        int originalHeight =
+                original.getHeight();
 
-            /*
-             * PSM 6 is used only as a supporting OCR pass.
-             * Its output is NEVER used to replace the original
-             * name, DOB or PAN number.
-             */
+        /*
+         * Maximum dimension allowed for OCR.
+         *
+         * This prevents very large PDF pages from consuming
+         * excessive Java heap memory.
+         */
 
-            text =
-                    performOCR(
-                            imageFile,
-                            6
+        final int MAX_DIMENSION = 4000;
+
+        /*
+         * If the image is already large enough,
+         * do NOT enlarge it.
+         */
+
+        int largestDimension =
+                Math.max(
+                        originalWidth,
+                        originalHeight
+                );
+
+        if (largestDimension >= MAX_DIMENSION) {
+
+            double scale =
+                    (double) MAX_DIMENSION
+                            / largestDimension;
+
+            int newWidth =
+                    Math.max(
+                            1,
+                            (int) (
+                                    originalWidth
+                                            * scale
+                            )
                     );
 
-        } catch (Exception e) {
+            int newHeight =
+                    Math.max(
+                            1,
+                            (int) (
+                                    originalHeight
+                                            * scale
+                            )
+                    );
 
-            return "";
-        }
-
-        if (text == null || text.isBlank()) {
-            return "";
-        }
-
-        String[] lines =
-                text.replace("\r", "")
-                        .split("\n");
-
-        for (int i = 0;
-                i < lines.length;
-                i++) {
-
-            String current =
-                    cleanLine(lines[i]);
-
-            if (!isFatherLabel(current)) {
-                continue;
-            }
-
-            /*
-             * Father's Name label was found.
-             * The next useful line should contain the person's name.
-             */
-
-            for (int j = i + 1;
-                    j < lines.length;
-                    j++) {
-
-                String candidate =
-                        cleanLine(lines[j]);
-
-                if (candidate.isBlank()) {
-                    continue;
-                }
-
-                /*
-                 * Do NOT accept things such as:
-                 *
-                 * Date of
-                 * Birth
-                 * Signature
-                 * Department
-                 * Government
-                 *
-                 * Only accept a plausible English person name.
-                 */
-
-                if (isValidPersonName(candidate)) {
-
-                    return "Father's Name\n"
-                            + candidate;
-                }
-
-                /*
-                 * If the next meaningful line clearly belongs
-                 * to another section, stop searching.
-                 */
-
-                String lower =
-                        candidate.toLowerCase();
-
-                if (lower.contains("date")
-                        || lower.contains("birth")
-                        || lower.contains("signature")
-                        || lower.contains("department")
-                        || lower.contains("government")
-                        || lower.contains("permanent")) {
-
-                    break;
-                }
-            }
-        }
-
-        return "";
-    }
-
-    // =============================================================
-    // FATHER LABEL DETECTION
-    // =============================================================
-
-    private boolean isFatherLabel(
-            String line) {
-
-        if (line == null || line.isBlank()) {
-            return false;
-        }
-
-        String lower =
-                line.toLowerCase();
-
-        /*
-         * Normal English OCR
-         */
-
-        if (lower.contains("father's name")) {
-            return true;
-        }
-
-        if (lower.contains("fathers name")) {
-            return true;
-        }
-
-        if (lower.contains("father name")) {
-            return true;
-        }
-
-        if (lower.contains("father")) {
-            return true;
+            return resizeImage(
+                    original,
+                    newWidth,
+                    newHeight
+            );
         }
 
         /*
-         * Common OCR variations
-         */
-
-        if (lower.contains("fath er")) {
-            return true;
-        }
-
-        if (lower.contains("fathcr")) {
-            return true;
-        }
-
-        if (lower.contains("fathers")) {
-            return true;
-        }
-
-        /*
-         * Hindi Father's Name label.
+         * For smaller images, allow a maximum 1.5X enlargement.
          *
-         * पिता का नाम
+         * This helps OCR quality without the huge memory usage
+         * caused by 3X enlargement.
          */
 
-        if (line.contains("पिता")) {
-            return true;
+        int newWidth =
+                Math.min(
+                        originalWidth * 3 / 2,
+                        MAX_DIMENSION
+                );
+
+        int newHeight =
+                Math.min(
+                        originalHeight * 3 / 2,
+                        MAX_DIMENSION
+                );
+
+        /*
+         * If enlargement is unnecessary,
+         * simply return the original image.
+         */
+
+        if (newWidth <= originalWidth
+                && newHeight <= originalHeight) {
+
+            return original;
         }
 
-        return false;
+        return resizeImage(
+                original,
+                newWidth,
+                newHeight
+        );
     }
 
     // =============================================================
-    // PERSON NAME VALIDATION
+    // IMAGE RESIZE
     // =============================================================
 
-    private boolean isValidPersonName(
-            String value) {
+    private BufferedImage resizeImage(
+            BufferedImage original,
+            int width,
+            int height) {
 
-        if (value == null
-                || value.isBlank()) {
+        BufferedImage resized =
+                new BufferedImage(
+                        width,
+                        height,
+                        BufferedImage.TYPE_INT_RGB
+                );
 
-            return false;
-        }
+        Graphics2D graphics =
+                resized.createGraphics();
 
-        String name =
-                cleanLine(value);
+        graphics.setRenderingHint(
+                RenderingHints.KEY_INTERPOLATION,
+                RenderingHints.VALUE_INTERPOLATION_BILINEAR
+        );
 
-        if (name.length() < 3) {
-            return false;
-        }
+        graphics.setRenderingHint(
+                RenderingHints.KEY_RENDERING,
+                RenderingHints.VALUE_RENDER_SPEED
+        );
 
-        /*
-         * Only English alphabet names are accepted here.
-         * This prevents OCR fragments such as "Date of" from
-         * becoming the father name.
-         */
+        graphics.setRenderingHint(
+                RenderingHints.KEY_ANTIALIASING,
+                RenderingHints.VALUE_ANTIALIAS_OFF
+        );
 
-        if (!name.matches(
-                "[A-Za-z]+(?:[ .'-][A-Za-z]+)*"
-        )) {
+        graphics.drawImage(
+                original,
+                0,
+                0,
+                width,
+                height,
+                null
+        );
 
-            return false;
-        }
+        graphics.dispose();
 
-        String upper =
-                name.toUpperCase();
-
-        /*
-         * Reject common PAN-card labels.
-         */
-
-        if (upper.equals("DATE OF")) {
-            return false;
-        }
-
-        if (upper.equals("DATE OF BIRTH")) {
-            return false;
-        }
-
-        if (upper.equals("BIRTH")) {
-            return false;
-        }
-
-        if (upper.equals("SIGNATURE")) {
-            return false;
-        }
-
-        if (upper.equals("DEPARTMENT")) {
-            return false;
-        }
-
-        if (upper.equals("GOVT OF INDIA")) {
-            return false;
-        }
-
-        if (upper.equals("GOVERNMENT OF INDIA")) {
-            return false;
-        }
-
-        if (upper.equals("INCOME TAX")) {
-            return false;
-        }
-
-        if (upper.equals("PERMANENT ACCOUNT NUMBER")) {
-            return false;
-        }
-
-        if (upper.equals("PERMANENT ACCOUNT NUMBER CARD")) {
-            return false;
-        }
-
-        if (upper.equals("NAME")) {
-            return false;
-        }
-
-        if (upper.equals("FATHER NAME")) {
-            return false;
-        }
-
-        if (upper.equals("FATHERS NAME")) {
-            return false;
-        }
-
-        if (upper.equals("FATHER'S NAME")) {
-            return false;
-        }
-
-        /*
-         * A real name normally contains at least one space
-         * on these PAN cards.
-         */
-
-        if (!name.contains(" ")) {
-            return false;
-        }
-
-        return true;
-    }
-
-    // =============================================================
-    // CLEAN OCR LINE
-    // =============================================================
-
-    private String cleanLine(
-            String value) {
-
-        if (value == null) {
-            return "";
-        }
-
-        return value
-                .replaceAll(
-                        "\\s+",
-                        " "
-                )
-                .trim();
-    }
-
-    // =============================================================
-    // PAN DETECTION
-    // =============================================================
-
-    private boolean looksLikePan(
-            String text) {
-
-        if (text == null
-                || text.isBlank()) {
-
-            return false;
-        }
-
-        String lower =
-                text.toLowerCase();
-
-        /*
-         * Normal PAN number.
-         */
-
-        if (text.matches(
-                "(?s).*\\b[A-Za-z]{5}\\d{4}[A-Za-z]\\b.*"
-        )) {
-
-            return true;
-        }
-
-        /*
-         * PAN keywords.
-         */
-
-        if (lower.contains("income tax")) {
-            return true;
-        }
-
-        if (lower.contains("permanent account")) {
-            return true;
-        }
-
-        if (lower.contains("pan card")) {
-            return true;
-        }
-
-        if (lower.contains("account number")) {
-            return true;
-        }
-
-        return false;
+        return resized;
     }
 
     // =============================================================
@@ -509,6 +303,19 @@ public class OcrService {
                 TESSERACT_DATA_PATH
         );
 
+        /*
+         * IMPORTANT:
+         *
+         * Keep English + Hindi + Telugu.
+         *
+         * This allows documents such as:
+         *
+         * Telugu + English Aadhaar
+         * Hindi + English Aadhaar
+         * English PAN
+         * Other multilingual documents
+         */
+
         tesseract.setLanguage(
                 OCR_LANGUAGES
         );
@@ -517,11 +324,29 @@ public class OcrService {
                 pageSegmentationMode
         );
 
+        /*
+         * LSTM OCR engine.
+         */
+
         tesseract.setOcrEngineMode(1);
+
+        /*
+         * Preserve spacing between words.
+         */
 
         tesseract.setVariable(
                 "preserve_interword_spaces",
                 "1"
+        );
+
+        /*
+         * Disable unnecessary OCR features that can consume
+         * additional processing resources.
+         */
+
+        tesseract.setVariable(
+                "user_defined_dpi",
+                "200"
         );
 
         try {
