@@ -15,7 +15,7 @@ RUN echo "=== TESSERACT VERSION ===" && \
     echo "=== TESSDATA FILES ===" && \
     ls -lh /usr/share/tesseract-ocr/5/tessdata/
 
-ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
+ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5
 
 WORKDIR /app
 
